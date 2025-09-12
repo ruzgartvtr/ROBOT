@@ -1,0 +1,11 @@
+{
+  "aktif_kullanici": 0,
+  "kullanicilar": [
+    {
+      "ad": "Rüzgar",
+      "rol": "Kullanici",
+      "yonerge": "BİRİ",
+      "foto": "/var/folders/8m/zs8jdq9s21s0gjwr23c97x880000gn/T/kisi_20250907-154306.png"
+    }
+  ]
+}
