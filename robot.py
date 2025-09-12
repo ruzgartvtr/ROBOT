@@ -1,4 +1,16 @@
+import cv2
+import os
+from glob import glob
+# --- Yüz Tanıma Otomatik Kullanıcı Değiştirme Özelliği ---
+# Global değişken: yüz tanıma aktif mi?
+yuz_tanima_aktif = True
+
 import os, threading, urllib.parse, webbrowser, requests, tempfile, subprocess, json, speech_recognition as sr, random, time
+import re
+import requests
+import json
+import time
+import base64
 from datetime import datetime
 from elevenlabs.client import ElevenLabs
 from kivy.app import App
@@ -13,41 +25,78 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.popup import Popup
 from kivy.uix.spinner import Spinner
 from kivy.animation import Animation
+from kivy.uix.camera import Camera
+from kivy.uix.textinput import TextInput
+from kivy.uix.image import Image as KivyImage
+from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.widget import Widget
+from kivy.graphics import Color, RoundedRectangle, Rectangle
+from kivy.metrics import dp
+from kivy.uix.textinput import TextInput
+from kivy.uix.camera import Camera
+from kivy.uix.image import Image as KivyImage
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
 import subprocess
 import zipfile
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyOAuth
 from bs4 import BeautifulSoup
-import wikipedia 
-import platform 
+import wikipedia
+import platform
 from unidecode import unidecode
 import difflib
 import unicodedata
+import os, pickle, numpy as np
+from glob import glob
+import vlc
+
+
 try:
+    import face_recognition
+    _FACE_BACKEND = "fr"  # face_recognition
+except Exception:
+    _FACE_BACKEND = "cv2"  # LBPH fallback
+def yeni_kullanici_ekle(ad, rol, yonerge):
+    import json
+    import os
+    import cv2
+    # settings.json'a ekle
+    ayar = ayarlari_yukle()
+    ayar["kullanicilar"].append({"ad": ad, "rol": rol, "yonerge": yonerge})
+    with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+        json.dump(ayar, f, ensure_ascii=False, indent=2)
 
-    from ctypes import cast, POINTER
-    from comtypes import CLSCTX_ALL
-    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-    PYCAW_AVAILABLE = True
-except ImportError:
-    PYCAW_AVAILABLE = False
-    print("Uyarı: pycaw kütüphanesi bulunamadı. Ses seviyesi kontrolü çalışmayacaktır. (Sadece Windows'ta geçerlidir)")
-except Exception as e:
-    PYCAW_AVAILABLE = False
-    print(f"Uyarı: pycaw yüklenirken bir hata oluştu: {e}. Ses seviyesi kontrolü çalışmayacaktır.")
+    # fotoğraf çek ve faces/{ad}.jpg olarak kaydet
+    os.makedirs("faces", exist_ok=True)
+    cam = cv2.VideoCapture(0)
+    ret, frame = cam.read()
+    cam.release()
+    if ret:
+        face_path = os.path.join("faces", f"{ad}.jpg")
+        cv2.imwrite(face_path, frame)
+        print(f"[FaceManager] {ad} için fotoğraf kaydedildi: {face_path}")
+    else:
+        print("[FaceManager] Kamera görüntüsü alınamadı.")
 
-GEMINI_API_KEY = "AIzaSyASyfZ1dGehA7gtE2XmzJch1KnUN_sBPvo"
+
+GEMINI_API_KEY = "AIzaSyAi91-ZOM33gSV0-2dDaiLNQDlZ0h-RVF4"
 VOICE_ID = "rDol2Ljxrvb0kzLzHooJ"
 ELEVEN_API_KEY = "sk_ffde8aed6e2dca9ded66ae1e071a7f142247fa419dbc4d03"
 GOZ_DOSYASI = "robot_goz.png"
 TMDB_API_KEY = "f12c7e8322e92753f482f81ff60041ee"
-AYARLAR_DOSYASI = r"C:\Users\ruzga\Downloads\Robot\ayarlari.json"
+AYARLAR_DOSYASI = "ayarlari.json"
 SOHBET_GECMİSİ_DOSYASI = "Sohbet Geçmişi.txt"
 cocukoyunulink = "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/refs/heads/main/tarayici.py"
 normaloyunlink = "https://www.dropbox.com/scl/fi/20ugfx7oioybvtrz9dv7j/cheese-is-the-reason.zip?rlkey=fn8lpak28ue0w2svsk6oi5v5x&e=1&st=xiv6keno&dl=1"
 NORMAL_OYUN_KLASORU = r"C:\Users\ruzga\Downloads\cheese is the reason"
 NORMAL_OYUN_EXE_YOLU = r"C:\Users\ruzga\Downloads\cheese is the reason\export 1 windows\Cheese is the reason.exe"
-HABER_KAYNAKLARI = ["https://www.aa.com.tr/tr/rss/default?cat=guncel"] 
+HABER_KAYNAKLARI = ["https://www.aa.com.tr/tr/rss/default?cat=guncel"]
+ADB_YOLU = "adb"
+CALENDARIFIC_API_KEY = "5S65ZPorvmu3JuZyukFM90JYKIafe3za"
+PYCAW_AVAILABLE = False
 
 # SPOTIFYIN BUNLAR
 client_id = "e8658e3b5a244497af73614e995db59e"
@@ -64,14 +113,242 @@ sp = Spotify(auth_manager=SpotifyOAuth(
 ))
 
 
-konusuyor_mu = False 
-robot_app_instance = None 
-aktif = False 
-gecmis_cumleler = [] 
+konusuyor_mu = False
+robot_app_instance = None
+aktif = False
+gecmis_cumleler = []
+
+# --- Çeviri Kulaklık Modu Durum ---
+translator_running = False
+translator_thread = None
+#
+# --- Google Fit: Çoklu Hesap Yardımcıları ---
+SCOPES_FIT = ["https://www.googleapis.com/auth/fitness.activity.read"]
+
+def get_fit_service(user="ruzgar"):
+    from googleapiclient.discovery import build as gbuild
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    creds = None
+    token_file = f"token_{user}.pkl"
+    # Önce gmail_ prefiksi denenir, sonra düz isim
+    prefer = [f"gmail_{user}.json", f"{user}.json"]
+    creds_file = next((p for p in prefer if os.path.exists(p)), None)
+    if not creds_file:
+        raise FileNotFoundError(f"Kimlik dosyası bulunamadı: {prefer}")
+
+    if os.path.exists(token_file):
+        with open(token_file, "rb") as token:
+            try:
+                import pickle
+                creds = pickle.load(token)
+            except Exception:
+                creds = None
+
+    if not creds or not getattr(creds, "valid", False):
+        if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES_FIT)
+            creds = flow.run_local_server(port=0)
+        with open(token_file, "wb") as token:
+            import pickle
+            pickle.dump(creds, token)
+
+    return gbuild("fitness", "v1", credentials=creds)
+
+def get_daily_steps(user="ruzgar"):
+    import datetime
+    service = get_fit_service(user)
+    now = datetime.datetime.utcnow()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = now
+    dataset = f"{int(start.timestamp() * 1e9)}-{int(end.timestamp() * 1e9)}"
+    steps = service.users().dataSources().datasets().get(
+        userId="me",
+        dataSourceId="derived:com.google.step_count.delta:com.google.android.gms:estimated_steps",
+        datasetId=dataset
+    ).execute()
+    total = 0
+    for point in steps.get("point", []):
+        for value in point.get("value", []):
+            total += value.get("intVal", 0)
+    return total
+
+# --- Gmail: Çoklu Hesap Yardımcıları ---
+SCOPES_GMAIL = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+def get_gmail_service(user="ruzgar"):
+    from googleapiclient.discovery import build as gbuild
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    import pickle
+    creds = None
+    token_file = f"gmail_token_{user}.pkl"
+    prefer = [f"gmail_{user}.json", f"{user}.json"]
+    creds_file = next((p for p in prefer if os.path.exists(p)), None)
+    if not creds_file:
+        raise FileNotFoundError(f"Gmail kimlik dosyası bulunamadı: {prefer}")
+
+    if os.path.exists(token_file):
+        with open(token_file, "rb") as token:
+            try:
+                creds = pickle.load(token)
+            except Exception:
+                creds = None
+
+    if not creds or not getattr(creds, "valid", False):
+        if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(creds_file, SCOPES_GMAIL)
+            creds = flow.run_local_server(port=0)
+        with open(token_file, "wb") as token:
+            pickle.dump(creds, token)
+
+    return gbuild("gmail", "v1", credentials=creds)
+
+def gmail_list_unread(user="ruzgar", max_results=5, query="in:inbox is:unread"):
+    try:
+        svc = get_gmail_service(user)
+        resp = svc.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+        msgs = resp.get("messages", [])
+        items = []
+        for m in msgs:
+            full = svc.users().messages().get(userId="me", id=m["id"], format="full").execute()
+            headers = {h["name"]: h["value"] for h in full.get("payload", {}).get("headers", [])}
+            frm = headers.get("From", "Bilinmiyor")
+            sub = headers.get("Subject", "(Konu yok)")
+            snippet = full.get("snippet", "")
+            items.append((frm, sub, snippet))
+        return items
+    except Exception as e:
+        print("[Gmail Hata]:", e)
+        return []
+
+# --- Bildirim & SMS Okuma (ADB) ---
+def get_unread_notifications(app_filter="whatsapp", limit=5):
+    try:
+        out = subprocess.check_output([ADB_YOLU, "shell", "dumpsys", "notification", "--noredact"], encoding="utf-8", stderr=subprocess.DEVNULL, timeout=8)
+        # Basit ayrıştırma: whatsapp/sms geçen satırları çek
+        lines = [l.strip() for l in out.splitlines() if app_filter.lower() in l.lower()]
+        # Kısa özet üret
+        results = []
+        for l in lines:
+            txt = l
+            # olası "tickerText=" veya "android.title=" alanlarını yakala
+            m = re.search(r"(tickerText=|android\.title=)([^,]+)", l)
+            if m:
+                txt = m.group(2).strip()
+            results.append(txt)
+            if len(results) >= limit:
+                break
+        return results
+    except Exception as e:
+        print("[Bildirim Okuma Hata]:", e)
+        return []
+
+def get_sms_inbox(limit=5):
+    # Bazı cihazlarda erişim kısıtlı olabilir; mümkünse content provider dene
+    try:
+        out = subprocess.check_output([ADB_YOLU, "shell", "content", "query", "--uri", "content://sms/inbox", "--projection", "address:body:date", "--sort", "date DESC", "--limit", str(limit)], encoding="utf-8", stderr=subprocess.DEVNULL, timeout=8)
+        items = []
+        for raw in out.strip().splitlines():
+            addr = re.search(r"address=(.*?)(,|$)", raw)
+            body = re.search(r"body=(.*?)(,|$)", raw)
+            if addr or body:
+                items.append(f"{addr.group(1) if addr else ''}: {body.group(1) if body else ''}")
+        return items
+    except Exception as e:
+        print("[SMS Okuma Hata]:", e)
+        return []
+
+# --- Google Haritalar Rota ---
+def ac_yol_tarifi(adres, travelmode="driving"):
+    try:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Rota açılıyor: {adres}", color=(0.8,0.8,0,1)))
+        q = urllib.parse.quote(adres)
+        url = f"https://www.google.com/maps/dir/?api=1&destination={q}&travelmode={travelmode}"
+        webbrowser.open(url)
+        seslendir(f"{adres} için yol tarifi açıldı.")
+    except Exception as e:
+        print("[Rota Hata]:", e)
+        seslendir("Yol tarifi açılamadı.")
+    finally:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
+
+# --- Canlı Çeviri (Kulaklık Modu) ---
+def simple_translate(text, src="auto", tgt="tr"):
+    try:
+        # Google translate public endpoint (anahtar gerektirmez)
+        params = {
+            "client": "gtx",
+            "sl": src,
+            "tl": tgt,
+            "dt": "t",
+            "q": text
+        }
+        r = requests.get("https://translate.googleapis.com/translate_a/single", params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        translated = "".join([seg[0] for seg in data[0]])
+        return translated
+    except Exception as e:
+        print("[Çeviri Hata]:", e)
+        return ""
+
+def _kulaklik_worker(src, tgt):
+    global translator_running
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Kulaklık modu: {src}->{tgt} (Çıkmak için 'kulaklik_dur')", color=(0,1,0,1)))
+        r.adjust_for_ambient_noise(source, duration=0.5)
+        while translator_running:
+            try:
+                audio = r.listen(source, phrase_time_limit=6)
+                text = r.recognize_google(audio, language=src)
+                if not text.strip():
+                    continue
+                tr = simple_translate(text, src=src, tgt=tgt) or ""
+                if tr:
+                    seslendir(tr)
+            except sr.UnknownValueError:
+                continue
+            except Exception as e:
+                print("[Kulaklık Hata]:", e)
+                continue
+    if robot_app_instance:
+        Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
+
+def kulaklik_baslat(lang_pair="en-tr"):
+    global translator_running, translator_thread
+    try:
+        src, tgt = lang_pair.split("-", 1)
+    except Exception:
+        src, tgt = "en", "tr"
+    if translator_running:
+        seslendir("Kulaklık modu zaten açık.")
+        return
+    translator_running = True
+    import threading
+    translator_thread = threading.Thread(target=_kulaklik_worker, args=(src, tgt), daemon=True)
+    translator_thread.start()
+    seslendir(f"Kulaklık modu başlatıldı: {src} → {tgt}")
+
+def kulaklik_dur():
+    global translator_running
+    if translator_running:
+        translator_running = False
+        seslendir("Kulaklık modu kapatıldı.")
+    else:
+        seslendir("Kulaklık modu açık değil.")
 
 print("AYARLAR DOSYASI YOLU:", os.path.abspath(AYARLAR_DOSYASI))
 client = ElevenLabs(api_key=ELEVEN_API_KEY)
-Window.clearcolor = (0.05, 0.05, 0.05, 1) 
+Window.clearcolor = (0.05, 0.05, 0.05, 1)
 
 def ayarlari_yukle():
     """
@@ -115,15 +392,16 @@ def sohbet_gecmisini_oku():
 
 def seslendir(ses):
     """
-    Verilen metni ElevenLabs API'si aracılığıyla seslendirir ve oynatır.
-    Konuşma sırasında 'konusuyor_mu' global değişkenini yönetir.
+    Verilen metni seslendirir. Öncelik sırası:
+    1. ElevenLabs (premium)
+    2. gTTS (Google TTS, ücretsiz)
+    3. pyttsx3 (offline, sınırsız)
     """
     global konusuyor_mu
-    if not ses.strip(): 
+    if not ses.strip():
         return
 
     print("[Robot]:", ses)
-
     if robot_app_instance:
         Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(ses, "Robot"))
         Clock.schedule_once(lambda dt: robot_app_instance.set_status("Konuşuyor...", color=(0, 1, 0, 1)))
@@ -132,47 +410,57 @@ def seslendir(ses):
 
     spotify_caliniyor = False
     try:
-        # Spotify çalıyor mu kontrolü
+        # Spotify çalıyorsa durdur
         current = sp.current_playback()
         if current and current.get("is_playing"):
             spotify_caliniyor = True
             sp.pause_playback()
-
-        konusuyor_mu = True
-        audio_gen = client.text_to_speech.convert(
-            text=ses,
-            voice_id=VOICE_ID,
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128"
-        )
-        audio_bytes = b"".join(audio_gen)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-
-        subprocess.run(["ffplay", "-nodisp", "-autoexit", tmp_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    except requests.exceptions.ConnectionError as e:
-        print(f"[Seslendirme Ağı Hatası]: Bağlantı kurulamadı - {e}")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("Seslendirme için ElevenLabs'e bağlanılamadı. İnternet bağlantınızı kontrol edin.", "Hata"))
-    except requests.exceptions.Timeout as e:
-        print(f"[Seslendirme Zaman Aşımı Hatası]: ElevenLabs yanıt vermedi - {e}")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("ElevenLabs seslendirme servisi zaman aşımına uğradı.", "Hata"))
-    except requests.exceptions.RequestException as e:
-        print(f"[Seslendirme API Hatası]: {e}")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"ElevenLabs API ile iletişimde hata oluştu: {e}", "Hata"))
-    except FileNotFoundError:
-        print("[Seslendirme Hatası]: ffplay bulunamadı. Lütfen ffplay'in PATH'inizde olduğundan emin olun.")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("Ses oynatıcı (ffplay) bulunamadı. Lütfen yükleyin.", "Hata"))
     except Exception as e:
-        print("[Seslendirme Genel Hatası]:", e)
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Seslendirme sırasında beklenmeyen bir hata oluştu: {e}", "Hata"))
+        print("[Spotify Kontrol Hatası]:", e)
+
+    tmp_path = None
+    try:
+        konusuyor_mu = True
+        # --- 1. ElevenLabs ---
+        try:
+            audio_gen = client.text_to_speech.convert(
+                text=ses,
+                voice_id=VOICE_ID,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128"
+            )
+            audio_bytes = b"".join(audio_gen)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+            subprocess.run(["ffplay", "-nodisp", "-autoexit", tmp_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception as e1:
+            print(f"[Seslendirme Hatası - ElevenLabs]: {e1}")
+
+        # --- 2. gTTS ---
+        try:
+            from gtts import gTTS
+            tts = gTTS(text=ses, lang="tr")
+            tmp_path = tempfile.mktemp(suffix=".mp3")
+            tts.save(tmp_path)
+            subprocess.run(["ffplay", "-nodisp", "-autoexit", tmp_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception as e2:
+            print(f"[Seslendirme Hatası - gTTS]: {e2}")
+
+        # --- 3. pyttsx3 ---
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            engine.say(ses)
+            engine.runAndWait()
+            return
+        except Exception as e3:
+            print(f"[Seslendirme Hatası - pyttsx3]: {e3}")
+
     finally:
         if spotify_caliniyor:
             try:
@@ -180,11 +468,10 @@ def seslendir(ses):
             except Exception as e:
                 print("[Spotify Başlatma Hatası]:", e)
         konusuyor_mu = False
-        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
- 
 
 def youtube_ac(aranan):
     """YouTube'da arama yapar ve ilk sonucu oynatır."""
@@ -311,7 +598,7 @@ def ses_dinle():
         except sr.WaitTimeoutError:
             if robot_app_instance:
                 Clock.schedule_once(lambda dt: robot_app_instance.set_status("Dinleme tamamlandı.", color=(0, 0.8, 0.8, 1)))
-            return "" 
+            return ""
     try:
         metin = r.recognize_google(ses, language="tr-TR")
         if robot_app_instance:
@@ -359,8 +646,8 @@ def dosya_indir(url, hedef_klasor=".", dosya_adi=None):
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"İndiriliyor: {dosya_adi}...", color=(0.8, 0.8, 0, 1)))
 
-        response = requests.get(url, stream=True, allow_redirects=True, timeout=(5, 30)) 
-        response.raise_for_status() 
+        response = requests.get(url, stream=True, allow_redirects=True, timeout=(5, 30))
+        response.raise_for_status()
 
         toplam_boyut = int(response.headers.get('content-length', 0))
         indirilen_boyut = 0
@@ -410,6 +697,57 @@ def dosya_indir(url, hedef_klasor=".", dosya_adi=None):
 
 
 
+class FaceManager:
+    def __init__(self):
+        self.known_faces = {}
+        if not os.path.exists("faces"):
+            print("[FaceManager] Klasör yok: faces")
+            return
+        for path in glob("faces/*.jpg"):
+            name = os.path.splitext(os.path.basename(path))[0]
+            try:
+                img = face_recognition.load_image_file(path)
+                enc = face_recognition.face_encodings(img)
+                if enc:
+                    self.known_faces[name] = enc[0]
+            except Exception as e:
+                print(f"[FaceManager] {path} için yüz kodlama hatası: {e}")
+
+    def recognize_from_camera(self):
+        # Kamera ile bir kare al ve yüz tanı
+        cam = cv2.VideoCapture(0)
+        ret, frame = cam.read()
+        cam.release()
+        if not ret:
+            print("[FaceManager] Kamera görüntüsü alınamadı.")
+            return None
+        rgb = frame[:, :, ::-1]
+        try:
+            locs = face_recognition.face_locations(rgb)
+            encs = face_recognition.face_encodings(rgb, locs)
+            for enc in encs:
+                for name, known_enc in self.known_faces.items():
+                    matches = face_recognition.compare_faces([known_enc], enc)
+                    if matches and matches[0]:
+                        print(f"[FaceManager] Tanındı: {name}")
+                        # --- Kullanıcı ayarları ile eşleştir ve aktif yap ---
+                        ayar = ayarlari_yukle()
+                        kullanicilar = ayar.get("kullanicilar", [])
+                        for i, kisi in enumerate(kullanicilar):
+                            if kisi.get("ad", "").lower() == name.lower():
+                                ayar["aktif_kullanici"] = i
+                                with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+                                    json.dump(ayar, f, ensure_ascii=False, indent=2)
+                                seslendir(f"Yüz tanındı. {name} aktif kullanıcı yapıldı.")
+                                if robot_app_instance:
+                                    Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"{name} aktif kullanıcı yapıldı.", "Sistem"))
+                                break
+                        return name
+        except Exception as e:
+            print(f"[FaceManager] Tanıma hatası: {e}")
+        print("[FaceManager] Tanıma başarısız.")
+        return None
+
 # --- KİŞİ GETİR (BENİMİ TEMİZLE + fuzzy eşleştirme) ---
 def kisi_numarasi_getir(isim):
     temiz_isim = unidecode(isim.lower().replace("benim", "").replace(" ", ""))
@@ -419,7 +757,7 @@ def kisi_numarasi_getir(isim):
         eslesme_listesi[temiz_ad] = numara
 
     yakinlar = difflib.get_close_matches(temiz_isim, eslesme_listesi.keys(), n=1, cutoff=0.5)
-    
+
     if yakinlar:
         eslesen = yakinlar[0]
 
@@ -428,7 +766,7 @@ def kisi_numarasi_getir(isim):
             print("[ÖZEL]: Anneanne tespit edildi, ekstra işlem yapılıyor...")
             # Örnek: ekranın bir yerine tıkla
             adb_komut("adb shell input tap 676 2273")
-            
+
 
         return eslesme_listesi[eslesen]
 
@@ -449,9 +787,6 @@ def adb_ile_arama_yap(telefon_numarasi):
 
 # --- Tam otomatik arama (ekran kilidinden sonra) ---
 def adb_ile_tam_otomatik_arama(numara):
-    scrcpy_baslat(ses_aktar=True)
-    if robot_app_instance:
-        Clock.schedule_once(lambda dt: robot_app_instance.arama_ekrani_goster())
 
     numara = numara.replace(" ", "").replace("-", "")
     adb_komut("adb shell input keyevent 26")
@@ -463,6 +798,7 @@ def adb_ile_tam_otomatik_arama(numara):
     adb_komut("adb shell input keyevent 66")
     time.sleep(3)
     adb_komut(f'adb shell am start -a android.intent.action.CALL -d tel:{numara}')
+    adb_komut("scrcpy")
 
 
 # --- Adrese göre arama (fuzzy + temiz) ---
@@ -475,9 +811,7 @@ def adb_ile_kisi_arama(kisi_adi):
 
 # --- WhatsApp görüntülü arama (fuzzy + temiz + adb) ---
 def whatsapp_goruntulu_arama_kisi_ara(kisi_adi):
-    scrcpy_baslat(ses_aktar=True)
-    if robot_app_instance:
-        Clock.schedule_once(lambda dt: robot_app_instance.arama_ekrani_goster())
+
 
     aranan = unidecode(kisi_adi.strip().lower().replace(" ", ""))  # yazılacak metin
     adb_komut("adb shell input keyevent 26")
@@ -502,6 +836,7 @@ def whatsapp_goruntulu_arama_kisi_ara(kisi_adi):
     time.sleep(1)
     adb_komut("adb shell input tap 762 180")  # görüntülü ara
     seslendir(f"{kisi_adi} görüntülü aranıyor.")
+    adb_komut("scrcpy")
 
 
 def whatsapp_mesaj_gonder(kisi_adi, mesaj):
@@ -517,10 +852,13 @@ def whatsapp_mesaj_gonder(kisi_adi, mesaj):
     time.sleep(1)
     adb_komut("adb shell am force-stop com.whatsapp")  # WhatsApp'ı kapat
     time.sleep(1.5)
-    adb_komut("adb shell input tap 409 1492")  # WhatsApp ikonuna tıkla
+    adb_komut("adb shell monkey -p com.whatsapp -c android.intent.category.LAUNCHER 1")
     time.sleep(2)
     adb_komut("adb shell input tap 950 150")  # Arama kutusu
     time.sleep(1)
+    if not mesaj.strip():
+        print("[Uyarı]: Gönderilecek mesaj boş!")
+    return
     adb_input_text_safe(kisi_adi)  # Aranacak kişiyi yaz
     time.sleep(2)
     adb_komut("adb shell input tap 400 400")  # Kişiye tıkla
@@ -548,19 +886,6 @@ def adb_input_text_safe(text):
     text = text.replace(" ", "%s")
     komut = f'adb shell input text "{text}"'
     subprocess.run(komut, shell=True)
-
-def scrcpy_baslat(ses_aktar=False):
-    try:
-        komut = ["scrcpy"]
-        if ses_aktar:
-            komut.append("--audio")
-        subprocess.Popen(komut)
-        seslendir("Telefon ekranı gösteriliyor.")
-    except FileNotFoundError:
-        seslendir("SCRCPY bulunamadı. Lütfen yükleyin.")
-    except Exception as e:
-        print("[SCRCPY Hatası]:", e)
-        seslendir("SCRCPY başlatılırken hata oluştu.")
 
 
 
@@ -618,7 +943,7 @@ def dosyayi_calistir(dosya_yolu):
             os.startfile(dosya_yolu)
         elif platform.system() == 'Linux':
             subprocess.Popen(['xdg-open', dosya_yolu])
-        elif platform.system() == 'Darwin': 
+        elif platform.system() == 'Darwin':
             subprocess.Popen(['open', dosya_yolu])
         else:
             seslendir("Bu işletim sistemi için dosya çalıştırma desteklenmiyor.")
@@ -627,7 +952,7 @@ def dosyayi_calistir(dosya_yolu):
             return
 
         print(f"'{dosya_yolu}' başarıyla çalıştırıldı (veya çalıştırma komutu gönderildi).")
-        seslendir(f"'{os.path.basename(dosya_yolu)}' başlatıldı.") 
+        seslendir(f"'{os.path.basename(dosya_yolu)}' başlatıldı.")
     except FileNotFoundError:
         print(f"Hata: '{dosya_yolu}' dosyasını açacak uygun bir uygulama bulunamadı.")
         if robot_app_instance:
@@ -649,13 +974,13 @@ def wikipedia_bilgi_al(konu):
     try:
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Wikipedia'dan {konu} aranıyor...", color=(0.8, 0.8, 0, 1)))
-        wikipedia.set_lang("tr") 
+        wikipedia.set_lang("tr")
 
         page = wikipedia.page(konu, auto_suggest=True)
         summary = wikipedia.summary(konu, sentences=3, auto_suggest=True, redirect=True)
 
         seslendir(f"{konu} hakkında Wikipedia'dan özet: {summary}")
-        webbrowser.open(page.url) 
+        webbrowser.open(page.url)
     except wikipedia.exceptions.PageError:
         seslendir(f"Üzgünüm, {konu} hakkında bir bilgi bulamadım.")
         if robot_app_instance:
@@ -713,13 +1038,13 @@ def haberleri_oku():
                 Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("Haber kaynağı tanımlanmamış.", "Uyarı"))
             return
 
-        kaynak_url = HABER_KAYNAKLARI[-1] 
+        kaynak_url = HABER_KAYNAKLARI[-1]
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status("Haberler alınıyor...", color=(0.8, 0.8, 0, 1)))
         response = requests.get(kaynak_url, timeout=5)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'xml')
-        basliklar = soup.find_all('title')[1:6] 
+        basliklar = soup.find_all('title')[1:6]
 
         if not basliklar:
             seslendir("Üzgünüm, haber başlığı bulunamadı.")
@@ -769,7 +1094,7 @@ def sistemi_uyku_moduna_al():
             subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", check=True, timeout=5)
         elif platform.system() == 'Linux':
             subprocess.run("systemctl suspend", shell=True, check=True, timeout=5)
-        elif platform.system() == 'Darwin': 
+        elif platform.system() == 'Darwin':
             subprocess.run("pmset sleepnow", check=True, timeout=5)
         else:
             seslendir("Bu işletim sistemi için uyku modu desteklenmiyor.")
@@ -809,7 +1134,7 @@ def sistemi_yeniden_baslat():
             subprocess.run("shutdown /r /t 1", shell=True, check=True, timeout=5)
         elif platform.system() == 'Linux':
             subprocess.run("sudo reboot", shell=True, check=True, timeout=5)
-        elif platform.system() == 'Darwin': 
+        elif platform.system() == 'Darwin':
             subprocess.run("sudo reboot", check=True, timeout=5)
         else:
             seslendir("Bu işletim sistemi için yeniden başlatma desteklenmiyor.")
@@ -850,10 +1175,10 @@ def uygulama_ac(uygulama_adi):
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"{uygulama_adi} açılıyor...", color=(0.8, 0.8, 0, 1)))
         if platform.system() == 'Windows':
-            subprocess.Popen(uygulama_adi, shell=True) 
+            subprocess.Popen(uygulama_adi, shell=True)
         elif platform.system() == 'Linux':
             subprocess.Popen(uygulama_adi.lower(), shell=True)
-        elif platform.system() == 'Darwin': 
+        elif platform.system() == 'Darwin':
             subprocess.Popen(['open', '-a', uygulama_adi])
         else:
             seslendir("Bu işletim sisteminde uygulama açma desteklenmiyor.")
@@ -880,10 +1205,10 @@ def uygulama_kapat(uygulama_adi):
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"{uygulama_adi} kapatılıyor...", color=(0.8, 0.8, 0, 1)))
         if platform.system() == 'Windows':
-            subprocess.run(f"taskkill /im {uygulama_adi}.exe /f", check=True, timeout=5) 
+            subprocess.run(f"taskkill /im {uygulama_adi}.exe /f", check=True, timeout=5)
         elif platform.system() == 'Linux':
             subprocess.run(f"pkill -f {uygulama_adi}", shell=True, check=True, timeout=5)
-        elif platform.system() == 'Darwin': 
+        elif platform.system() == 'Darwin':
             subprocess.run(f"pkill -f {uygulama_adi}", check=True, timeout=5)
         else:
             seslendir("Bu işletim sisteminde uygulama kapatma desteklenmiyor.")
@@ -910,32 +1235,6 @@ def uygulama_kapat(uygulama_adi):
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
 
-def ses_seviyesini_ayarla(yuzde):
-    """Ses seviyesini ayarlar (sadece Windows için pycaw gerektirir)."""
-    if not PYCAW_AVAILABLE:
-        seslendir("Ses seviyesi kontrolü için gerekli kütüphane (pycaw) yüklü değil veya işletim sisteminiz Windows değil.")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("Ses seviyesi kontrolü kullanılamıyor (pycaw eksik).", "Uyarı"))
-        return
-
-    try:
-        yuzde = max(0, min(100, int(yuzde)))
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Ses seviyesi %{yuzde} olarak ayarlanıyor...", color=(0.8, 0.8, 0, 1)))
-
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        volume.SetMasterVolumeLevelScalar(yuzde / 100, None)
-        seslendir(f"Ses seviyesi %{yuzde} olarak ayarlandı.")
-    except Exception as e:
-        print(f"[Ses Seviyesi Hatası]: {e}")
-        seslendir("Ses seviyesi ayarlanırken bir hata oluştu.")
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Ses seviyesi ayarlanırken bir hata oluştu: {e}", "Hata"))
-    finally:
-        if robot_app_instance:
-            Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
 
 def zamanlayici_kur(saniye, mesaj):
     """Belirli bir süre sonra mesajı seslendirir."""
@@ -973,7 +1272,7 @@ def site_ozetle(url_str):
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Site içeriği alınıyor ve özetleniyor...", color=(0.8, 0.8, 0, 1)))
 
         parsed_url = urllib.parse.urlparse(url_str)
-        if not parsed_url.scheme: 
+        if not parsed_url.scheme:
             url_str = "http://" + url_str
 
         response = requests.get(url_str, timeout=10)
@@ -985,12 +1284,12 @@ def site_ozetle(url_str):
             script.extract()
         text = soup.get_text(separator=' ', strip=True)
 
-        if len(text) > 4000: 
+        if len(text) > 4000:
             text = text[:4000] + "..."
 
         prompt_text = f"Aşağıdaki site içeriğini Türkçe olarak özetle:\n\n{text}"
 
-        ozet_yanit = gemini_yanit_al(prompt_text, is_summary_request=True) 
+        ozet_yanit = gemini_yanit_al(prompt_text, is_summary_request=True)
         if ozet_yanit:
             seslendir(f"Site özeti: {ozet_yanit}")
         else:
@@ -1018,7 +1317,67 @@ def site_ozetle(url_str):
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
 
-KISILER = {
+def hangi_adb_cihaz():
+    try:
+        output = subprocess.check_output(["adb", "devices"], encoding="utf-8")
+        lines = output.strip().split("\n")[1:]
+        cihazlar = [line.split("\t")[0] for line in lines if "device" in line]
+        return cihazlar[0] if cihazlar else None
+    except Exception as e:
+        print("[ADB Cihaz Tespiti Hatası]:", e)
+        return None
+
+def rehberden_kisileri_getir():
+    kisiler = {}
+    try:
+        output = subprocess.check_output(
+            [ADB_YOLU, 'shell', 'content', 'query', '--uri', 'content://contacts/phones/', '--projection', 'display_name:number'],
+            encoding='utf-8', stderr=subprocess.DEVNULL
+        )
+        for satir in output.strip().splitlines():
+            if "display_name=" in satir and "number=" in satir:
+                ad = ""
+                numara = ""
+                parcalar = satir.split(",")
+                for parca in parcalar:
+                    if "display_name=" in parca:
+                        ad = parca.split("display_name=")[-1].strip().lower()
+                    elif "number=" in parca:
+                        numara = parca.split("number=")[-1].strip()
+                if ad and numara:
+                    kisiler[ad] = numara
+    except Exception as e:
+        print(f"[REHBER OKUMA HATASI]: {e}")
+    return kisiler
+
+
+
+def vcf_oku_yeni_kisiler(vcf_dosya_yolu):
+    kisiler = {}
+    try:
+        with open(vcf_dosya_yolu, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            ad = None
+            tel = None
+            for line in lines:
+                line = line.strip()
+                if line.startswith("FN:"):
+                    ad = line[3:].strip()
+                elif line.startswith("TEL:") or "TEL;" in line:
+                    tel = line.split(":")[-1].strip()
+                elif line == "END:VCARD" and ad and tel:
+                    kisiler[ad.lower()] = tel
+                    ad = None
+                    tel = None
+    except Exception as e:
+        print("[VCF OKUMA HATASI]:", e)
+    return kisiler
+
+cihaz_seri = hangi_adb_cihaz()
+
+if cihaz_seri == "R5CW11M6E7R":
+    print("Orijinal cihaz bağlı! KISILER elle atanacak.")
+    KISILER = {
     "aaa": "05548181045",
     "ahsenteyze": "5445628499",
     "ali": "5548169584",
@@ -1043,6 +1402,12 @@ KISILER = {
     "tanerabi": "+905414838272"
 }
 
+else:
+    print("Yeni cihaz bağlı! Telefonda rehberden kişiler çekiliyor...")
+    KISILER = rehberden_kisileri_getir()
+    print(f"{len(KISILER)} kişi yüklendi: {list(KISILER.keys())}")
+
+
 
 def adb_komut(cmd):
     print("[ADB]:", cmd)
@@ -1050,15 +1415,19 @@ def adb_komut(cmd):
 
 
 
-def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=False):
+def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=False, kamera_ekle=False):
     """
     Gemini API'sinden yanıt alır. Bağlantı ve diğer hataları detaylı yönetir.
     'is_summary_request' bayrağı, prompt'un farklı formatlanmasını sağlar.
+    'kamera_ekle' bayrağı, isteğe kamera görüntüsü eklenip eklenmeyeceğini belirler.
     """
     kullanici = aktif_kullanici_bilgi()
 
+    parts = []
+
+    # 1. Metin içeriğini oluştur
     if is_summary_request:
-        mesaj = metin 
+        prompt_metni = metin
     else:
         komut_listesi = """
         - youtube:... (müzik veya video arar)
@@ -1095,9 +1464,6 @@ def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=Fa
         - disney:... (Disney Plus'ta arama yapar)
         - kitap:... (e-kitap arar)
         - tema:siyah/beyaz (uygulama temasını değiştirir)
-        - cocuk_oyunu: (çocuk oyunu başlatır)
-        - normal_oyun: (normal oyun başlatır)
-        - soru: (soru sorar)
         - tatil:... (tatilleri gösterir)
         - ucus:... (uçuşları gösterir)
         - trend (trendleri gösterir)
@@ -1109,20 +1475,71 @@ def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=Fa
         - ara:.... (kişiyi rehberden bulur ve arar)
         - whatsappgoruntulu:.... (whatsappdan rehberden bulur ve görüntülü arar)
         - wpsms:kisi:mesaj:      (whatsappdan sms)
+        - radyo:... (belirtilen radyoyu açar)
+        - ışık aç: (ışık açar)
+        - ışık kapat: (ışık kapatır)
+        - özel gün: (özel gün mü diye kontrol eder)
+        - iss: (ISS konumu gösterir)
+        - mars: (Mars hava durumu)
+        - gökyüzü: (yıldız haritası gösterir)
+        - tweet:... (Twitter’a yazı gönderir)
+        - instaindir:... (Instagram’dan içerik indirir)
+        - sms:kisi:mesaj (SMS gönderir)
+        - zar (1–6 arası rastgele sayı üretir)
+        - tombala (rastgele tombala numarası üretir)
+        - espri (rastgele şaka yapar)
+        - adım (adım sayısını gösterir)
+        - bitcoin (Bitcoin fiyatı gösterir)
+        - dolar (USD/TRY kuru)
+        - borsa:... (hisse fiyatını getirir)
+        - rota:... (Google Haritalar'da yol tarifi açar)
+        - kamera_acikla (kameradan bir kare alır ve ne gördüğünü açıklar)
+        - haber_ozet (son haberlerden kısa özetler okur)
+        - alarm:HH:MM:mesaj (belirtilen saatte bir defa çalar)
+        - alarm_tekrar:HH:MM:mesaj (her gün aynı saatte çalar)
+        - alarm_iptal (tüm kurulu alarmları iptal eder)
+        - neredeyim (IP tabanlı yaklaşık konumu söyler)
+        - yakin:... (bulunduğun konuma yakın yerleri haritada açar)
         """
         sohbet_gecmisi = sohbet_gecmisini_oku()
-        mesaj = f"Geçmiş Sohbet:\n{sohbet_gecmisi}\n\nKullanici adi: {kullanici['ad']}\nRol: {kullanici['rol']}\nYonerge: {kullanici['yonerge']}\nKullanici soyle dedi: '{metin}'\n\nEger ozel komut varsa bu formatlardan biriyle cevap ver:\n{komut_listesi}. Respond concisely and Keep it brief. Sadece komutu veya ilgili yanıtı ver, ekleme yapma. Normal konuşma dışında komut verme. Komut verdiğinde sadece komutu yaz."
+        prompt_metni = f"Geçmiş Sohbet:\n{sohbet_gecmisi}\n\nKullanici adi: {kullanici['ad']}\nRol: {kullanici['rol']}\nYonerge: {kullanici['yonerge']}\nKullanici soyle dedi: '{metin}'\n\nEger ozel komut varsa bu formatlardan biriyle cevap ver:\n{komut_listesi}. Respond concisely and Keep it brief. Sadece komutu veya ilgili yanıtı ver, ekleme yapma. Normal konuşma dışında komut verme. Komut verdiğinde sadece komutu yaz."
+
+    parts.append({"text": prompt_metni})
+
+    # 2. Kamera görüntüsünü isteğe bağlı ekle
+    if kamera_ekle:
+        try:
+            import cv2, base64
+            cam = cv2.VideoCapture(0)
+            ret, frame = cam.read()
+            cam.release()
+            if ret:
+                temp_file = "gemini_capture.jpg"
+                cv2.imwrite(temp_file, frame)
+                with open(temp_file, "rb") as image_file:
+                    encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": encoded_string
+                    }
+                })
+                print("[Gemini] Kamera görüntüsü eklendi.")
+            else:
+                print("[Gemini] Kamera görüntüsü alınamadı.")
+        except Exception as e:
+            print(f"[Gemini Hatası] Kamera kare eklenemedi: {e}")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
-    data = {"contents": [{"role": "user", "parts": [{"text": mesaj}]}]}
+    data = {"contents": [{"role": "user", "parts": parts}]}
 
     for deneme in range(max_deneme):
         try:
             if robot_app_instance:
                 Clock.schedule_once(lambda dt: robot_app_instance.set_status("Cevap oluşturuluyor...", color=(0.8, 0.8, 0, 1)))
-            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15) 
-            response.raise_for_status() 
+            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
+            response.raise_for_status()
 
             result = response.json()
             if "candidates" in result and len(result["candidates"]) > 0 and \
@@ -1135,7 +1552,7 @@ def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=Fa
                     Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Gemini'den geçersiz yanıt alındı. Tekrar deneniyor.", "Hata"))
                 time.sleep(bekleme_suresi)
                 bekleme_suresi *= 2
-                continue 
+                continue
 
         except requests.exceptions.ConnectionError as e:
             print(f"[Gemini API Bağlantı Hatası] Deneme {deneme + 1}/{max_deneme}: Bağlantı kurulamadı. Yeniden deniyor... Bekleme süresi: {bekleme_suresi}s. Hata: {e}")
@@ -1171,10 +1588,12 @@ def gemini_yanit_al(metin, max_deneme=3, bekleme_suresi=2, is_summary_request=Fa
     print(f"[Gemini API] Maksimum {max_deneme} denemeye rağmen yanıt alınamadı.")
     if robot_app_instance:
         Clock.schedule_once(lambda dt: robot_app_instance.set_status(f"Gemini API'den yanıt alınamadı. Lütfen daha sonra tekrar deneyin veya internet bağlantınızı kontrol edin.", "Hata"))
-    return "" 
+    return ""
 
     if robot_app_instance:
         Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
+
+
 def kameraac():
     try:
         html_kamera_yolu = os.path.join(tempfile.gettempdir(), "kamera_goruntule.html")
@@ -1232,10 +1651,10 @@ def film_oner_tmdb():
     try:
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status("Film önerisi alınıyor...", color=(0.8, 0.8, 0, 1)))
-        sayfa = random.randint(1, 5) 
+        sayfa = random.randint(1, 5)
         response = requests.get(
             f'https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=tr-TR&page={sayfa}',
-            timeout=5 
+            timeout=5
         )
         response.raise_for_status()
         data = response.json()
@@ -1276,17 +1695,311 @@ def film_oner_tmdb():
         if robot_app_instance:
             Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
 
+
+# === (2) Görsel Tanıma & Açıklama ===
+def kamera_acikla():
+    """Kameradan tek kare alır, Gemini ile kısa açıklama üretir ve seslendirir."""
+    try:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status("Kamera çerçevesi alınıyor...", color=(0.8, 0.8, 0, 1)))
+        aciklama = gemini_yanit_al("Bu görüntüyü kısa ve basit Türkçe ile açıkla.", kamera_ekle=True)
+        if aciklama:
+            seslendir(aciklama)
+            if robot_app_instance:
+                Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(aciklama, "Görüntü Açıklama"))
+        else:
+            seslendir("Görüntü açıklaması alınamadı.")
+    except Exception as e:
+        print("[Kamera Açıklama Hatası]:", e)
+        seslendir("Görüntü açıklaması sırasında bir hata oluştu.")
+    finally:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
+
+# === (4) Sesli Haber Özetleyici ===
+def haber_ozetleri(sayi=3, feed_url="https://feeds.bbci.co.uk/turkce/rss.xml"):
+    """RSS'ten son haberleri çeker, her bir haberin sayfasını özetleyip seslendirir."""
+    try:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status("Haberler özetleniyor...", color=(0.8, 0.8, 0, 1)))
+        import xml.etree.ElementTree as ET
+        r = requests.get(feed_url, timeout=8)
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+        ns = {"dc": "http://purl.org/dc/elements/1.1/"}
+        items = root.findall(".//item")[:sayi]
+        if not items:
+            seslendir("Haber bulunamadı.")
+            return
+        for it in items:
+            baslik = (it.findtext("title") or "(Başlık yok)").strip()
+            link = (it.findtext("link") or "").strip()
+            seslendir(f"Haber: {baslik}")
+            if not link:
+                continue
+            try:
+                resp = requests.get(link, timeout=10)
+                resp.raise_for_status()
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(resp.content, 'html.parser')
+                for s in soup(["script", "style", "noscript"]):
+                    s.extract()
+                text = soup.get_text(separator=' ', strip=True)
+                if len(text) > 4000:
+                    text = text[:4000] + "..."
+                ozet = gemini_yanit_al(f"Şu haberi 2-3 cümlede, sade Türkçe ile özetle:\n\n{text}", is_summary_request=True)
+                if ozet:
+                    seslendir(ozet)
+            except Exception as e:
+                print("[Haber Özet Hatası]:", e)
+                continue
+    except Exception as e:
+        print("[Haber Özetleyici Genel Hata]:", e)
+        seslendir("Haber özetleri alınamadı.")
+    finally:
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_status(""))
+
+# === (6) Gelişmiş Alarm & Hatırlatıcı ===
+aktif_alarmlar = []
+
+def _alarm_calis(mesaj, tekrarla, saat_str):
+    seslendir(f"Alarm: {mesaj}")
+    if robot_app_instance:
+        Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Alarm: {mesaj}", "Alarm"))
+    if tekrarla:
+        # Bir sonraki gün için yeniden kur
+        alarm_kur(saat_str, mesaj, tekrarla=True)
+
+def alarm_kur(saat_str, mesaj, tekrarla=False):
+    """HH:MM formatında alarm kurar. tekrarla=True ise her gün tekrarlar."""
+    try:
+        import datetime, threading
+        hh, mm = saat_str.split(":")
+        hh = int(hh); mm = int(mm)
+        now = datetime.datetime.now()
+        hedef = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if hedef <= now:
+            hedef += datetime.timedelta(days=1)
+        delta = (hedef - now).total_seconds()
+        t = threading.Timer(delta, _alarm_calis, args=(mesaj, tekrarla, saat_str))
+        t.daemon = True
+        t.start()
+        aktif_alarmlar.append(t)
+        if tekrarla:
+            seslendir(f"Her gün {saat_str} için alarm kuruldu: {mesaj}")
+        else:
+            seslendir(f"{saat_str} için alarm kuruldu: {mesaj}")
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Alarm kuruldu: {saat_str} - {mesaj}", "Sistem"))
+    except Exception as e:
+        print("[Alarm Kurma Hatası]:", e)
+        seslendir("Alarm kurulamadı.")
+
+def alarm_iptal():
+    """Tüm bekleyen alarmları iptal eder."""
+    try:
+        say = 0
+        for t in list(aktif_alarmlar):
+            try:
+                t.cancel()
+                say += 1
+            except Exception:
+                pass
+            finally:
+                try:
+                    aktif_alarmlar.remove(t)
+                except ValueError:
+                    pass
+        seslendir(f"{say} alarm iptal edildi.")
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"{say} alarm iptal edildi.", "Sistem"))
+    except Exception as e:
+        print("[Alarm İptal Hatası]:", e)
+        seslendir("Alarm iptal edilemedi.")
+
+# === (7) Harita + Lokasyon Bilgisi ===
+def neredeyim():
+    """IP tabanlı yaklaşık konumu söyler."""
+    try:
+        r = requests.get("https://ipinfo.io/json", timeout=6)
+        r.raise_for_status()
+        data = r.json()
+        sehir = data.get("city", "bilinmeyen")
+        ulke = data.get("country", "")
+        loc = data.get("loc", "")
+        seslendir(f"Yaklaşık konum: {sehir} {ulke}")
+        if robot_app_instance:
+            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"Konum: {sehir} {ulke} ({loc})", "Sistem"))
+        return loc
+    except Exception as e:
+        print("[Konum Hatası]:", e)
+        seslendir("Konum alınamadı.")
+        return None
+
+def yakin_ara(terim):
+    """Bulunduğun konuma yakın yerleri Google Haritalar'da açar."""
+    try:
+        loc = neredeyim()
+        if not loc:
+            return
+        lat, lng = loc.split(",")
+        q = urllib.parse.quote(terim)
+        url = f"https://www.google.com/maps/search/{q}/@{lat},{lng},14z"
+        webbrowser.open(url)
+        seslendir(f"Yakınındaki {terim} için arama açıldı.")
+    except Exception as e:
+        print("[Yakın Arama Hatası]:", e)
+        seslendir("Yakın arama açılamadı.")
+
 # Tam entegre komut_coz_ve_isle fonksiyonu
 
 def komut_coz_ve_isle(metin):
-    if not metin.strip(): 
+    if not metin.strip():
         return
 
     yanit = gemini_yanit_al(metin)
     print("[Gemini Yanıtı]:", yanit)
 
+    # --- Yeni Komutlar (erken işle) ---
+    if yanit.startswith("kamera_acikla"):
+        kamera_acikla()
+        return
+    if yanit.startswith("haber_ozet"):
+        haber_ozetleri()
+        return
+    if yanit.startswith("alarm_tekrar:"):
+        try:
+            _, saat, mesaj = yanit.split(":", 2)
+            alarm_kur(saat.strip(), mesaj.strip(), tekrarla=True)
+        except Exception:
+            seslendir("Alarm formatı: alarm_tekrar:HH:MM:mesaj")
+        return
+    if yanit.startswith("alarm:"):
+        try:
+            _, saat, mesaj = yanit.split(":", 2)
+            alarm_kur(saat.strip(), mesaj.strip(), tekrarla=False)
+        except Exception:
+            seslendir("Alarm formatı: alarm:HH:MM:mesaj")
+        return
+    if yanit.startswith("alarm_iptal"):
+        alarm_iptal()
+        return
+    if yanit.startswith("neredeyim"):
+        neredeyim()
+        return
+    if yanit.startswith("yakin:"):
+        terim = yanit.split(":", 1)[1].strip()
+        yakin_ara(terim)
+        return
+    if yanit.startswith("kulaklik:"):
+        pair = yanit.split(":", 1)[1].strip() or "en-tr"
+        kulaklik_baslat(pair)
+        return
+    if "kulaklik_dur" in yanit:
+        kulaklik_dur()
+        return
+    if yanit.startswith("mail:"):
+        kisi = yanit.split(":",1)[1].strip().lower()
+        kisi = {"ruzgar":"ruzgar","huriye":"huriye","oylum":"oylum"}.get(kisi, "ruzgar")
+        items = gmail_list_unread(kisi, max_results=5)
+        if not items:
+            seslendir("Okunmamış e-posta bulunamadı veya erişilemedi.")
+        else:
+            for frm, sub, snip in items:
+                seslendir(f"{frm} - {sub}")
+        return
+    if yanit.startswith("bildirim:"):
+        app = yanit.split(":",1)[1].strip().lower()
+        if app == "sms":
+            lst = get_sms_inbox(limit=5)
+        else:
+            lst = get_unread_notifications(app_filter=app, limit=5)
+        if not lst:
+            seslendir("Bildirim bulunamadı.")
+        else:
+            for it in lst:
+                seslendir(it[:200])
+        return
+    if yanit.startswith("rota:"):
+        adres = yanit.split(":",1)[1].strip()
+        if adres:
+            ac_yol_tarifi(adres, travelmode="driving")
+        else:
+            seslendir("Hedef adres bulunamadı.")
+        return
+
     # WhatsApp Görüntülü Arama
-    if "whatsappgoruntulu:" in yanit:
+    # --- YENİ KOMUTLAR ---
+    if "iss" in yanit:
+        seslendir("ISS şu an Dünya üzerinde X konumunda.")  # Buraya gerçek API entegrasyonu yapılabilir
+    elif "mars" in yanit:
+        seslendir("Mars yüzeyinde hava sıcaklığı yaklaşık -60 derece.")  # Örnek yanıt
+    elif "gökyüzü" in yanit:
+        webbrowser.open("https://stellarium.org/")  # Gökyüzü haritası
+        seslendir("Gökyüzü haritası açılıyor.")
+    elif "tweet:" in yanit:
+        icerik = yanit.split("tweet:", 1)[1].strip()
+        seslendir(f"Tweet gönderiliyor: {icerik}")  # Twitter API ile gönderilebilir
+    elif "instaindir:" in yanit:
+        link = yanit.split("instaindir:", 1)[1].strip()
+        seslendir(f"Instagram içeriği indiriliyor: {link}")
+    elif "sms:" in yanit:
+        try:
+            _, kisi, mesaj = yanit.split(":", 2)
+            hedef = kisi.strip()
+            seslendir(f"{hedef} numarasına SMS gönderiliyor: {mesaj}")
+            adb_komut("adb shell input keyevent 26")  # Ekranı aç
+            time.sleep(1.2)
+            adb_komut("adb shell input swipe 500 1500 500 500")  # Kilidi aç
+            time.sleep(1.5)
+            adb_komut("adb shell input text 2015")  # Şifre yaz
+            time.sleep(1)
+            adb_komut("adb shell input keyevent 66")  # Enter
+            time.sleep(1)
+            adb_komut("adb shell input keyevent 3")  # Ana ekran
+            time.sleep(2)
+            adb_komut(f'adb shell am start -a android.intent.action.SENDTO -d sms:{hedef} --es sms_body "{mesaj}"')
+            time.sleep(5)
+            adb_komut("adb shell input keyevent 22")  # Gönder tuşuna odaklan
+            time.sleep(2)
+            adb_komut("adb shell input keyevent 66")  # Enter = Gönder
+        except Exception as e:
+            print("[SMS Hata]:", e)
+            seslendir("SMS gönderilemedi.")
+    elif "zar" in yanit:
+        seslendir(f"Zar sonucu: {random.randint(1, 6)}")
+    elif "tombala" in yanit:
+        seslendir(f"Tombala numarası: {random.randint(1, 90)}")
+    elif "espri" in yanit:
+        espriler = ["Bu robot çok komik!", "Bilgisayarım virüs kapmış... Şimdi hasta bilgisayar oldum!", "Benim şakam RAM gibi hızlı!"]
+        seslendir(random.choice(espriler))
+    elif "kalori:" in yanit:
+        yemek = yanit.split("kalori:", 1)[1].strip()
+        seslendir(f"{yemek} yaklaşık 250 kalori.")  # Buraya gerçek hesap eklenebilir
+    elif "adım" in yanit:
+        try:
+            r = get_daily_steps("ruzgar")
+            h = get_daily_steps("huriye")
+            o = get_daily_steps("oylum")
+            mesaj = f"Rüzgar {r} adım, Huriye {h} adım, Oylum {o} adım attı."
+            seslendir(mesaj)
+            if robot_app_instance:
+                Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(mesaj, "Sistem"))
+        except Exception as e:
+            print("[Adım Hata]:", e)
+            seslendir("Adım bilgileri alınamadı.")
+    elif "uyku" in yanit:
+        seslendir("Son uyku analizine göre 7 saat 20 dakika uyudunuz.")  # Örnek veri
+    elif "bitcoin" in yanit:
+        seslendir("Bitcoin fiyatı şu an 65 bin dolar civarında.")  # Gerçek API bağlanabilir
+    elif "dolar" in yanit:
+        seslendir("1 Amerikan Doları = 32 Türk Lirası.")  # Örnek veri
+    elif "borsa:" in yanit:
+        hisse = yanit.split("borsa:", 1)[1].strip()
+        seslendir(f"{hisse} hissesi bugün %2 arttı.")  # Örnek veri
+    # WhatsApp Görüntülü Ara
+    elif "whatsappgoruntulu:" in yanit:
         kisi = yanit.split("whatsappgoruntulu:", 1)[1].strip().lower().replace(" ", "")
         for ad, numara in KISILER.items():
             if kisi in ad:
@@ -1417,6 +2130,73 @@ def komut_coz_ve_isle(metin):
             adb_ile_tam_otomatik_arama(hedef)
         else:
             adb_ile_kisi_arama(hedef)
+
+        # Radyo Aç
+    elif "radyo:" in yanit:
+        kanal = yanit.split("radyo:", 1)[1].strip().lower()
+        radyo_linkleri = {
+            "Kral": "http://46.20.3.204:80/",
+            "90lar": "https://moondigitalmaster.radyotvonline.net/90lar/playlist.m3u8",
+            "Power Türk": "https://live.powerapp.com.tr/powerturk/abr/playlist.m3u8"
+        }
+        if kanal in radyo_linkleri:
+            webbrowser.open(radyo_linkleri[kanal])
+            seslendir(f"{kanal} radyosu açılıyor.")
+        else:
+            seslendir("Bu radyo kanalı listede yok.")
+
+    # Tatil Günleri
+    elif "tatil" in yanit:
+        try:
+            url = f"https://calendarific.com/api/v2/holidays?&api_key={CALENDARIFIC_API_KEY}&country=TR&year={datetime.now().year}"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            if "response" in data and "holidays" in data["response"]:
+                tatiller = data["response"]["holidays"]
+                mesaj = ", ".join([f"{t['date']['iso']} {t['name']}" for t in tatiller[:5]])
+                seslendir(f"Türkiye'deki bazı resmi tatiller: {mesaj}")
+            else:
+                seslendir("Tatil bilgisi alınamadı.")
+        except Exception as e:
+            print(f"[Tatil Hatası]: {e}")
+            seslendir("Tatil bilgisi alınamadı.")
+
+    # Bugün Özel Bir Gün mü
+    elif "özel gün" in yanit or "bugün özel" in yanit:
+        try:
+            url = f"https://calendarific.com/api/v2/holidays?&api_key={CALENDARIFIC_API_KEY}&country=TR&year={datetime.now().year}&month={datetime.now().month}&day={datetime.now().day}"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            if "response" in data and "holidays" in data["response"] and data["response"]["holidays"]:
+                gun = data["response"]["holidays"][0]["name"]
+                seslendir(f"Evet, bugün {gun}.")
+            else:
+                seslendir("Bugün özel bir gün değil.")
+        except Exception as e:
+            print(f"[Özel Gün Hatası]: {e}")
+            seslendir("Bugün için özel gün bilgisi alınamadı.")
+
+    # Işık Aç/Kapat
+    elif "ışık aç" in yanit:
+        try:
+            # Buraya kendi akıllı ev API isteğini koyabilirsin
+            # Örn: requests.post("http://192.168.1.50/light/on")
+            seslendir("Işıklar açıldı.")
+        except Exception as e:
+            print(f"[Işık Açma Hatası]: {e}")
+            seslendir("Işıklar açılamadı.")
+    elif "ışık kapat" in yanit:
+        try:
+            # Buraya kendi akıllı ev API isteğini koyabilirsin
+            # Örn: requests.post("http://192.168.1.50/light/off")
+            seslendir("Işıklar kapatıldı.")
+        except Exception as e:
+            print(f"[Işık Kapama Hatası]: {e}")
+            seslendir("Işıklar kapatılamadı.")
+
+
     elif yanit:
         if len(yanit) <= 200:
             seslendir(yanit)
@@ -1430,6 +2210,29 @@ def komut_coz_ve_isle(metin):
             Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj("Anlayamadım veya komutu işleyemedim.", "Robot"))
 
 
+# --- Yüz Tanıma Dinleyici Thread'i ---
+def yuz_tanima_dinleyici():
+    global yuz_tanima_aktif
+    fm = FaceManager()
+    while yuz_tanima_aktif:
+        ad = fm.recognize_from_camera()
+        if ad:
+            try:
+                data = ayarlari_yukle()
+                for i, kisi in enumerate(data.get("kullanicilar", [])):
+                    if kisi.get("ad", "").lower() == ad.lower():
+                        data["aktif_kullanici"] = i
+                        with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        seslendir(f"Yüz tanındı. {ad} aktif kullanıcı yapıldı.")
+                        if robot_app_instance:
+                            Clock.schedule_once(lambda dt: robot_app_instance.set_mesaj(f"{ad} aktif kullanıcı yapıldı.", "Sistem"))
+                        break
+            except Exception as e:
+                print("[Yüz Tanıma Kullanıcı Değiştirme Hatası]:", e)
+        time.sleep(5)
+
+
 
 
 def buton_sesli_komut():
@@ -1440,8 +2243,8 @@ def arkaplan_dinleyici():
     """Robotun sürekli olarak arka planda ses dinlemesini sağlar."""
     global aktif
     while True:
-        if konusuyor_mu: 
-            time.sleep(0.5) 
+        if konusuyor_mu:
+            time.sleep(0.5)
             continue
 
         metin = ses_dinle()
@@ -1459,180 +2262,654 @@ def arkaplan_dinleyici():
             else:
                 komut_coz_ve_isle(metin)
 
+
+
+
+from kivy.uix.widget import Widget
+from kivy.uix.textinput import TextInput
+from kivy.uix.camera import Camera
+from kivy.uix.image import Image as KivyImage
+
+
+class Theme:
+    bg1 = (0.1,0.1,0.1,1)
+    txt = (1,1,1,1)
+    sub = (0.7,0.7,0.7,1)
+
+class RoundPanel(BoxLayout): pass
+class PrimaryButton(Label): pass
+class GhostButton(Label): pass
+
+class FaceManager:
+    def __init__(self, faces_dir="faces"):
+        self.known_encodings = []
+        self.known_names = []
+        self.load_faces(faces_dir)
+
+    def load_faces(self, faces_dir):
+        if not os.path.exists(faces_dir):
+            print("[FaceManager] Klasör yok:", faces_dir)
+            return
+        for file in os.listdir(faces_dir):
+            path = os.path.join(faces_dir, file)
+            if not file.lower().endswith((".jpg", ".png", ".jpeg")):
+                continue
+            img = face_recognition.load_image_file(path)
+            encs = face_recognition.face_encodings(img)
+            if encs:
+                self.known_encodings.append(encs[0])
+                name = file.split("_")[0]
+                self.known_names.append(name)
+        print(f"[FaceManager] {len(self.known_names)} kişi yüklendi:", self.known_names)
+
+    def recognize_from_camera(self, cam_index=0, num_frames=3):
+        cap = cv2.VideoCapture(cam_index)
+        names_detected = []
+        for _ in range(num_frames):
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            rgb = frame[:, :, ::-1]
+            locs = face_recognition.face_locations(rgb)
+            encs = face_recognition.face_encodings(rgb, locs)
+            for enc in encs:
+                matches = face_recognition.compare_faces(self.known_encodings, enc)
+                if True in matches:
+                    idx = matches.index(True)
+                    names_detected.append(self.known_names[idx])
+        cap.release()
+        if names_detected:
+            return max(set(names_detected), key=names_detected.count)
+        return None
+
+
+class AddPersonPopup(Popup):
+    """Gorsellerdeki 'KISI EKLE' ekrani; 3 sutun: Kamera / Ad / Talimat + sag ustte BITIR."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.title = ""
+        self.size_hint = (0.95, 0.9)
+        self.auto_dismiss = False
+        root = BoxLayout(orientation="vertical", padding=20, spacing=20)
+
+        # Header
+        header = BoxLayout(size_hint_y=None, height=70)
+        header.add_widget(Label(text="KISI EKLE", font_size=36, bold=True, color=(.8,.8,.8,1)))
+        header.add_widget(Widget())
+        self.btn_finish = Button(text="BITIR", size_hint=(None,None), size=(180,60),
+                                 background_normal="", background_color=(.6,1,.6,1), color=(0,0,0,1))
+        self.btn_finish.bind(on_release=self._on_finish)
+        header.add_widget(self.btn_finish)
+        root.add_widget(header)
+
+        body = BoxLayout(spacing=30)
+
+        # 1) Kamera sütunu
+        left = BoxLayout(orientation="vertical", spacing=16, size_hint_x=.33)
+        self.cam_holder = BoxLayout(size_hint_y=None, height=260)
+        with self.cam_holder.canvas.before:
+            from kivy.graphics import Color, Rectangle
+            Color(.6,1,.6,1)
+            self._rect = Rectangle(pos=self.cam_holder.pos, size=self.cam_holder.size)
+        self.cam_holder.bind(size=lambda _,v: setattr(self._rect, "size", v),
+                             pos=lambda _,v: setattr(self._rect, "pos", v))
+        try:
+            self.camera = Camera(resolution=(1280,720), play=True)
+            self.cam_holder.add_widget(self.camera)
+        except Exception as e:
+            self.camera = None
+            self.cam_holder.add_widget(Label(text="Kamera bulunamadi", color=(0,0,0,1)))
+            print("[KisiEkle] Camera yok:", e)
+
+        left.add_widget(self.cam_holder)
+        btn_snap = Button(text="FOTOGRAF CEK", size_hint=(None,None), height=68, width=360,
+                          background_normal="", background_color=(.6,1,.6,1), color=(0,0,0,1))
+        btn_snap.bind(on_release=self._snap)
+        left.add_widget(btn_snap)
+
+        btn_cancel = Button(text="IPTAL", size_hint=(None,None), height=68, width=360,
+                            background_normal="", background_color=(1,.3,.3,1), color=(0,0,0,1))
+        btn_cancel.bind(on_release=lambda *_: self.dismiss())
+        left.add_widget(btn_cancel)
+        body.add_widget(left)
+
+        # 2) Ad sütunu
+        mid = BoxLayout(orientation="vertical", spacing=16, size_hint_x=.34)
+        mid.add_widget(Label(text="Ad Girin", font_size=48, bold=True, color=(.6,.6,.6,1),
+                             size_hint_y=None, height=60))
+        name_box = BoxLayout(size_hint_y=None, height=80, padding=8)
+        with name_box.canvas.before:
+            from kivy.graphics import Color, Rectangle
+            Color(1,1,1,1); self._name_rect = Rectangle(pos=name_box.pos, size=name_box.size)
+        name_box.bind(size=lambda _,v: setattr(self._name_rect,"size",v),
+                      pos=lambda _,v: setattr(self._name_rect,"pos",v))
+        self.in_name = TextInput(hint_text="AD GIRILECEK YER", multiline=False,
+                                 background_color=(0,0,0,0), foreground_color=(0,0,0,1),
+                                 cursor_color=(0,0,0,1), write_tab=False)
+        name_box.add_widget(self.in_name)
+        mid.add_widget(name_box)
+        self.lbl_photo_path = Label(text="", size_hint_y=None, height=24, color=(.7,.7,.7,1), font_size=12)
+        mid.add_widget(self.lbl_photo_path)
+        body.add_widget(mid)
+
+        # 3) Talimat sütunu
+        right = BoxLayout(orientation="vertical", spacing=16, size_hint_x=.33)
+        right.add_widget(Label(text="Talimat Girin", font_size=48, bold=True, color=(.6,.6,.6,1),
+                               size_hint_y=None, height=60))
+        note_box = BoxLayout(padding=8)
+        with note_box.canvas.before:
+            from kivy.graphics import Color, Rectangle
+            Color(1,1,1,1); self._note_rect = Rectangle(pos=note_box.pos, size=note_box.size)
+        note_box.bind(size=lambda _,v: setattr(self._note_rect,"size",v),
+                      pos=lambda _,v: setattr(self._note_rect,"pos",v))
+        self.in_note = TextInput(hint_text="TALIMAT GIRILECEK YER", multiline=True,
+                                 background_color=(0,0,0,0), foreground_color=(0,0,0,1),
+                                 cursor_color=(0,0,0,1))
+        note_box.add_widget(self.in_note)
+        right.add_widget(note_box)
+        body.add_widget(right)
+
+        root.add_widget(body)
+        self.content = root
+        self.captured_path = ""
+
+    def _snap(self, *_):
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(tempfile.gettempdir(), f"kisi_{ts}.png")
+        try:
+            if self.camera:
+                self.camera.export_to_png(path)
+            else:
+                from PIL import Image as PILImage
+                PILImage.new("RGB", (800,450), (120,220,120)).save(path)
+            self.captured_path = path
+            self.lbl_photo_path.text = f"Kaydedildi: {os.path.basename(path)}"
+            print("[KisiEkle] Foto kayit:", path)
+        except Exception as e:
+            self.lbl_photo_path.text = "Foto kaydedilemedi"
+            print("[KisiEkle] Snap hata:", e)
+
+    def _on_finish(self, *_):
+        ad = (self.in_name.text or "").strip()
+        talimat = (self.in_note.text or "").strip()
+        foto = self.captured_path
+        if not ad:
+            self.lbl_photo_path.text = "Lutfen ad girin."
+            return
+        data = ayarlari_yukle()
+        data.setdefault("kullanicilar", [])
+        data["kullanicilar"].append({"ad": ad, "rol": "Kullanici", "yonerge": talimat, "foto": foto})
+        data["aktif_kullanici"] = len(data["kullanicilar"]) - 1
+        with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        seslendir(f"{ad} eklendi.")
+        self.dismiss()
+        EditPersonPopup(initial={"ad": ad, "talimat": talimat, "foto": foto}).open()
+
+
+class Theme:
+    bg1   = (0.06, 0.07, 0.10, 1)   # ana arka plan
+    bg2   = (0.10, 0.11, 0.15, 0.85) # kart
+    acc   = (0.38, 0.78, 0.58, 1)   # vurgulu (yeşil)
+    warn  = (0.98, 0.76, 0.36, 1)   # kehribar
+    danger= (0.95, 0.35, 0.35, 1)   # kırmızı
+    txt   = (0.92, 0.94, 0.97, 1)
+    sub   = (0.65, 0.70, 0.78, 1)
+
+class RoundPanel(BoxLayout):
+    """Cam/blur hissi veren yuvarlatılmış panel (statik)."""
+    def __init__(self, radius=18, fill=Theme.bg2, **kwargs):
+        super().__init__(**kwargs)
+        self.radius = radius
+        self.fill = fill
+        self.padding = [dp(14), dp(12), dp(14), dp(12)]
+        self.spacing = dp(10)
+        with self.canvas.before:
+            Color(*self.fill)
+            self._rr = RoundedRectangle(pos=self.pos, size=self.size, radius=[self.radius])
+        self.bind(size=self._update, pos=self._update)
+
+    def _update(self, *_):
+        self._rr.pos = self.pos
+        self._rr.size = self.size
+
+class GhostButton(Button):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.background_normal = ""
+        self.background_color = (0,0,0,0)
+        self.color = Theme.txt
+        self.bold = True
+        self.font_size = dp(16)
+        self.size_hint = (None, None)
+        if not self.size:
+            self.size = (dp(140), dp(44))
+        with self.canvas.before:
+            Color(1,1,1,0.08)
+            self._rr = RoundedRectangle(pos=self.pos, size=self.size, radius=[14])
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._rr.pos = self.pos
+        self._rr.size = self.size
+
+class PrimaryButton(Button):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.background_normal = ""
+        self.background_color = Theme.acc
+        self.color = (0,0,0,1)
+        self.bold = True
+        self.font_size = dp(16)
+        self.size_hint = (None, None)
+        if not self.size:
+            self.size = (dp(160), dp(48))
+        with self.canvas.before:
+            Color(*Theme.acc)
+            self._rr = RoundedRectangle(pos=self.pos, size=self.size, radius=[16])
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._rr.pos = self.pos
+        self._rr.size = self.size
+
+class DangerButton(PrimaryButton):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.background_color = Theme.danger
+        with self.canvas.before:
+            Color(*Theme.danger)
+            self._rr = RoundedRectangle(pos=self.pos, size=self.size, radius=[16])
+
+# ——— KİŞİ EKLE ———
+class AddPersonPopup(Popup):
+    """Görseldeki tarzda ama daha modern: 3 sütun + sağ üstte BİTİR."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.title = ""
+        self.size_hint = (0.96, 0.9)
+        self.auto_dismiss = False
+        self.background = ""  # default gölgelendirmeyi kapat
+        self.separator_height = 0
+
+        root = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(18))
+        # Üst çubuk
+        top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        title = Label(text="KİŞİ EKLE", color=Theme.txt, bold=True, font_size=dp(26), halign="left", valign="middle")
+        title.bind(size=lambda _,v: setattr(title, "text_size", v))
+        top.add_widget(title); top.add_widget(Widget())
+        btn_finish = PrimaryButton(text="BİTİR")
+        btn_finish.bind(on_release=self._on_finish)
+        top.add_widget(btn_finish)
+        root.add_widget(top)
+
+        # Gövde
+        body = BoxLayout(spacing=dp(18))
+
+        # 1) Kamera
+        left = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.36)
+        cam_card = RoundPanel()
+        cam_box = BoxLayout(size_hint_y=None, height=dp(260))
+        with cam_box.canvas.before:
+            Color(0.6,1,0.6,0.15); Rectangle(pos=cam_box.pos, size=cam_box.size)
+        cam_box.bind(pos=lambda *_: None, size=lambda *_: None)
+        try:
+            self.camera = Camera(resolution=(1280,720), play=True)
+            cam_box.add_widget(self.camera)
+        except Exception as e:
+            self.camera = None
+            cam_box.add_widget(Label(text="Kamera bulunamadı", color=Theme.sub))
+            print("[KisiEkle] Camera yok:", e)
+        cam_card.add_widget(cam_box)
+        left.add_widget(cam_card)
+
+        row_btns = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(52))
+        snap = PrimaryButton(text="📸 Fotoğraf Çek", size=(dp(180), dp(48)))
+        snap.bind(on_release=self._snap)
+        cancel = DangerButton(text="İptal", size=(dp(120), dp(48)))
+        cancel.bind(on_release=lambda *_: self.dismiss())
+        row_btns.add_widget(snap); row_btns.add_widget(cancel); row_btns.add_widget(Widget())
+        left.add_widget(row_btns)
+        body.add_widget(left)
+
+        # 2) Ad
+        mid = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.32)
+        mid.add_widget(Label(text="Ad", color=Theme.sub, font_size=dp(20), size_hint_y=None, height=dp(26)))
+        name_card = RoundPanel()
+        self.in_name = TextInput(hint_text="Ad girin",
+                                 multiline=False,
+                                 background_color=(0,0,0,0),
+                                 foreground_color=(0,0,0,1),
+                                 cursor_color=(0,0,0,1),
+                                 padding=[dp(10), dp(12), dp(10), dp(12)])
+        name_card.add_widget(self.in_name)
+        mid.add_widget(name_card)
+        self.lbl_photo_path = Label(text="", color=Theme.sub, font_size=dp(12), size_hint_y=None, height=dp(20))
+        mid.add_widget(self.lbl_photo_path)
+        body.add_widget(mid)
+
+        # 3) Talimat
+        right = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.32)
+        right.add_widget(Label(text="Talimat", color=Theme.sub, font_size=dp(20), size_hint_y=None, height=dp(26)))
+        note_card = RoundPanel()
+        self.in_note = TextInput(hint_text="Talimat yazın",
+                                 multiline=True,
+                                 background_color=(0,0,0,0),
+                                 foreground_color=(0,0,0,1),
+                                 cursor_color=(0,0,0,1),
+                                 padding=[dp(10), dp(12), dp(10), dp(12)])
+        note_card.add_widget(self.in_note)
+        right.add_widget(note_card)
+        body.add_widget(right)
+
+        root.add_widget(body)
+        self.content = root
+        self.captured_path = ""
+
+    def _snap(self, *_):
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(tempfile.gettempdir(), f"kisi_{ts}.png")
+        try:
+            if self.camera:
+                self.camera.export_to_png(path)
+            else:
+                from PIL import Image as PILImage
+                PILImage.new("RGB", (800,450), (120,220,120)).save(path)
+            self.captured_path = path
+            self.lbl_photo_path.text = f"[bb]Kaydedildi:[/bb] {os.path.basename(path)}"
+            print("[KisiEkle] Foto kayit:", path)
+        except Exception as e:
+            self.lbl_photo_path.text = "[bb]Hata:[/bb] Foto kaydedilemedi"
+            print("[KisiEkle] Snap hata:", e)
+
+    def _on_finish(self, *_):
+        ad = (self.in_name.text or "").strip()
+        talimat = (self.in_note.text or "").strip()
+        foto = self.captured_path
+        if not ad:
+            self.lbl_photo_path.text = "Lütfen ad girin."
+            return
+        data = ayarlari_yukle()
+        data.setdefault("kullanicilar", [])
+        data["kullanicilar"].append({"ad": ad, "rol": "Kullanici", "yonerge": talimat, "foto": foto})
+        data["aktif_kullanici"] = len(data["kullanicilar"]) - 1
+        with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        seslendir(f"{ad} eklendi.")
+        self.dismiss()
+        EditPersonPopup(initial={"ad": ad, "talimat": talimat, "foto": foto}).open()
+
+# ——— KİŞİ DÜZENLE ———
+class EditPersonPopup(Popup):
+    def __init__(self, initial=None, **kwargs):
+        super().__init__(**kwargs)
+        self.title = ""
+        self.size_hint = (0.96, 0.9)
+        self.auto_dismiss = True
+        self.initial = initial or {}
+        self.background = ""
+        self.separator_height = 0
+
+        root = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(18))
+
+        top = BoxLayout(size_hint_y=None, height=dp(56))
+        title = Label(text="KİŞİ DÜZENLE", color=Theme.txt, bold=True, font_size=dp(26), halign="left", valign="middle")
+        title.bind(size=lambda _,v: setattr(title, "text_size", v))
+        top.add_widget(title); top.add_widget(Widget())
+        root.add_widget(top)
+
+        body = BoxLayout(spacing=dp(18))
+
+        # Foto
+        col1 = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.36)
+        col1.add_widget(Label(text="Fotoğraf", color=Theme.sub, font_size=dp(20), size_hint_y=None, height=dp(26)))
+        img_card = RoundPanel()
+        img_box = BoxLayout(size_hint_y=None, height=dp(260))
+        self.img = KivyImage(allow_stretch=True, keep_ratio=True)
+        if self.initial.get("foto") and os.path.exists(self.initial["foto"]):
+            self.img.source = self.initial["foto"]
+        img_box.add_widget(self.img)
+        img_card.add_widget(img_box)
+        col1.add_widget(img_card)
+        btn_recap = GhostButton(text="📷 Yeni Fotoğraf Çek", size=(dp(220), dp(44)))
+        btn_recap.bind(on_release=lambda *_: AddPersonPopup().open())
+        col1.add_widget(btn_recap)
+        body.add_widget(col1)
+
+        # Ad
+        col2 = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.32)
+        col2.add_widget(Label(text="Ad", color=Theme.sub, font_size=dp(20), size_hint_y=None, height=dp(26)))
+        name_card = RoundPanel()
+        self.ed_name = TextInput(text=self.initial.get("ad",""), hint_text="Ad",
+                                 multiline=False, background_color=(0,0,0,0),
+                                 foreground_color=(0,0,0,1), cursor_color=(0,0,0,1),
+                                 padding=[dp(10), dp(12), dp(10), dp(12)])
+        name_card.add_widget(self.ed_name)
+        col2.add_widget(name_card)
+        btn_name = PrimaryButton(text="Kaydet", size=(dp(140), dp(44)))
+        btn_name.bind(on_release=self._save_name)
+        col2.add_widget(btn_name)
+        body.add_widget(col2)
+
+        # Talimat
+        col3 = BoxLayout(orientation="vertical", spacing=dp(12), size_hint_x=.32)
+        col3.add_widget(Label(text="Talimat", color=Theme.sub, font_size=dp(20), size_hint_y=None, height=dp(26)))
+        note_card = RoundPanel()
+        self.ed_note = TextInput(text=self.initial.get("talimat",""), hint_text="Talimat",
+                                 multiline=True, background_color=(0,0,0,0),
+                                 foreground_color=(0,0,0,1), cursor_color=(0,0,0,1),
+                                 padding=[dp(10), dp(12), dp(10), dp(12)])
+        note_card.add_widget(self.ed_note)
+        col3.add_widget(note_card)
+        btn_note = PrimaryButton(text="Kaydet", size=(dp(140), dp(44)))
+        btn_note.bind(on_release=self._save_note)
+        col3.add_widget(btn_note)
+        body.add_widget(col3)
+
+        root.add_widget(body)
+        self.content = root
+
+    def _save_name(self, *_):
+        data = ayarlari_yukle()
+        i = data.get("aktif_kullanici", 0)
+        if 0 <= i < len(data.get("kullanicilar", [])):
+            data["kullanicilar"][i]["ad"] = self.ed_name.text.strip()
+            with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            seslendir("Ad güncellendi.")
+
+    def _save_note(self, *_):
+        data = ayarlari_yukle()
+        i = data.get("aktif_kullanici", 0)
+        if 0 <= i < len(data.get("kullanicilar", [])):
+            data["kullanicilar"][i]["yonerge"] = self.ed_note.text.strip()
+            with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            seslendir("Talimat güncellendi.")
+
+# ——— ANA UYGULAMA ———
+from kivy.graphics import Color, Rectangle  # üst importlarda yoksa ekli kalsın
+
 class RobotApp(App):
     def build(self):
         global robot_app_instance
         robot_app_instance = self
 
-        self.load_chat_history_to_ui()
-
+        # --- Arka plan (self.layout) ---
         self.layout = FloatLayout()
+        with self.layout.canvas.before:
+            Color(*Theme.bg1)
+            self._bg_rect = Rectangle(pos=self.layout.pos, size=self.layout.size)
 
-        self.chat_history_layout = BoxLayout(orientation='vertical', size_hint_y=None)
+        def _sync_bg(*_):
+            if hasattr(self, "_bg_rect"):
+                self._bg_rect.size = self.layout.size
+                self._bg_rect.pos = self.layout.pos
+
+        self.layout.bind(size=_sync_bg, pos=_sync_bg)
+
+        # Üst Uygulama Çubuğu
+        appbar = RoundPanel(size_hint=(1, None), height=dp(64), pos_hint={"x": 0, "top": 1})
+        bar = BoxLayout()
+        title = Label(text="ROBOT", color=Theme.txt, bold=True, font_size=dp(22),
+                      size_hint_x=None, width=dp(120))
+        bar.add_widget(title)
+        bar.add_widget(Widget())
+        # Hızlı durum etiketi
+        self.status_label = Label(text="Hazır", color=Theme.sub, font_size=dp(14))
+        bar.add_widget(self.status_label)
+        appbar.add_widget(bar)
+        self.layout.add_widget(appbar)
+
+        # Orta: Sohbet Geçmişi (kart)
+        chat_card = RoundPanel(size_hint=(1, None), height=dp(300), pos_hint={"x": 0, "y": 0.58})
+        self.chat_history_layout = BoxLayout(
+            orientation='vertical', size_hint_y=None,
+            padding=[dp(12), dp(8), dp(12), dp(8)], spacing=dp(6)
+        )
         self.chat_history_layout.bind(minimum_height=self.chat_history_layout.setter('height'))
-        self.chat_scroll = ScrollView(size_hint=(1, 0.4), pos_hint={"center_x": 0.5, "y": 0.58}, do_scroll_x=False)
+        self.chat_scroll = ScrollView(do_scroll_x=False)
         self.chat_scroll.add_widget(self.chat_history_layout)
-        self.layout.add_widget(self.chat_scroll)
+        chat_card.add_widget(self.chat_scroll)
+        self.layout.add_widget(chat_card)
 
-        self.status_label = Label(text="Hazır!", font_size=16, color=(0, 1, 0, 1), size_hint=(1, None), height=30,
-                                  pos_hint={"center_x": 0.5, "y": 0.54})
-        self.layout.add_widget(self.status_label)
+        # Orta: “göz” görseli (kart)
+        eye_card = RoundPanel(size_hint=(None, None), size=(dp(320), dp(320)),
+                              pos_hint={"center_x": 0.5, "center_y": 0.72})
+        try:
+            self.img = Image(source=GOZ_DOSYASI, allow_stretch=True, keep_ratio=True)
+        except Exception:
+            self.img = Image(allow_stretch=True, keep_ratio=True)
+        eye_card.add_widget(self.img)
+        self.layout.add_widget(eye_card)
 
-        self.img = Image(source=GOZ_DOSYASI, size_hint=(None, None), size=(300, 300), pos_hint={"center_x": 0.5, "center_y": 0.7})
-        self.layout.add_widget(self.img)
+        # Alt Aksiyon Barı (scroll'lu, butonlar üst üste binmez)
+        actions = RoundPanel(size_hint=(1, None), height=dp(86), pos_hint={"x": 0, "y": 0.02})
 
-        self.buton_ekle("🎤 Sesli Komut", 0.22)
-        self.buton_ekle("👤 Kullanıcı Değiştir", 0.12, self.kullanici_degistir)
+        sv = ScrollView(size_hint=(1, 1), do_scroll_y=False, do_scroll_x=True, bar_width=dp(4))
+        row = BoxLayout(orientation="horizontal",
+                        spacing=dp(10),
+                        padding=[dp(12), dp(10), dp(12), dp(10)],
+                        size_hint=(None, 1))
+        row.bind(minimum_width=row.setter("width"))
 
-        self.eye_animation_scheduled = None 
-        Clock.schedule_interval(self.update_eye_animation, 0.1) 
+        btn_mic = PrimaryButton(text="🎤 Sesli Komut", size_hint=(None, 1), width=dp(220))
+        btn_mic.bind(on_release=lambda *_: buton_sesli_komut() if 'buton_sesli_komut' in globals() else None)
 
-        threading.Thread(target=arkaplan_dinleyici, daemon=True).start()
+        btn_user = GhostButton(text="👤 Kullanıcı Değiştir", size_hint=(None, 1), width=dp(220))
+        btn_user.bind(on_release=self.kullanici_degistir)
+
+        btn_add = GhostButton(text="➕ Kişi Ekle", size_hint=(None, 1), width=dp(220))
+        btn_add.bind(on_release=self.kisi_ekle_ac)
+
+        row.add_widget(btn_mic)
+        row.add_widget(btn_user)
+        row.add_widget(btn_add)
+
+        sv.add_widget(row)
+        actions.add_widget(sv)
+        self.layout.add_widget(actions)
+
+        # Animasyon + arkaplan dinleyici
+        self.eye_animation_scheduled = None
+        Clock.schedule_interval(self.update_eye_animation, 0.1)
+        if 'arkaplan_dinleyici' in globals():
+            threading.Thread(target=arkaplan_dinleyici, daemon=True).start()
+        # --- Yüz tanıma dinleyici thread'i başlat ---
+        threading.Thread(target=yuz_tanima_dinleyici, daemon=True).start()
+
+        # Sohbet geçmişini UI kurulduktan sonra yükle
+        Clock.schedule_once(lambda dt: self.load_chat_history_to_ui(), 0)
+
         return self.layout
 
-    def load_chat_history_to_ui(self):
-        """Uygulama başladığında sohbet geçmişini UI'a yükler."""
-        history_content = sohbet_gecmisini_oku().split('\n')
-
-        for line in history_content:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            if ']: ' in line:
-                try:
-                    parts = line.split(']: ', 1)
-                    sender_msg = parts[1]
-                    if sender_msg.startswith("Kullanıcı:"):
-                        sender = "Kullanıcı"
-                        message = sender_msg.split("Kullanıcı:", 1)[1].strip()
-                    elif sender_msg.startswith("Robot:"):
-                        sender = "Robot"
-                        message = sender_msg.split("Robot:", 1)[1].strip()
-                    else: 
-                        sender = "Sistem"
-                        message = sender_msg
-
-                    Clock.schedule_once(lambda dt, msg=message, s=sender, fh=True: self.set_mesaj(msg, s, from_history=fh))
-                except Exception as e:
-                    print(f"Sohbet geçmişi satırı ayrıştırılırken hata: {line} - {e}")
-
-                    Clock.schedule_once(lambda dt, line_err=line: self.set_mesaj(f"Geçmiş yükleme hatası: {line_err}", "Hata", from_history=True))
-
-    def set_mesaj(self, text, sender="Robot", from_history=False):
-        """
-        Sohbet geçmişine yeni bir mesaj ekler ve UI'ı günceller.
-        'from_history' bayrağı, geçmişten yüklenen mesajlar için animasyonları engeller.
-        Bu fonksiyon artık sadece ana Kivy iş parçacığında çalışır.
-        """
-
-        bubble_box = BoxLayout(orientation='vertical', size_hint_y=None, padding=[10, 5, 10, 5])
-        msg_label = Label(text=text, font_size=16, size_hint_y=None, markup=True,
-                          halign="left", valign="top", padding_x=10, padding_y=5)
-        msg_label.bind(texture_size=msg_label.setter('size'))
-
-        msg_label.text_size = (self.chat_scroll.width * 0.9, None) 
-
-        if sender == "Kullanıcı":
-            msg_label.text = f"[b]Siz:[/b] {text}"
-            msg_label.color = (1, 1, 1, 1)
-            bubble_box.background_color = (0.2, 0.5, 0.8, 0.8) 
-            bubble_box.padding = [self.chat_scroll.width * 0.1, 5, 10, 5] 
-            msg_label.halign = "right"
-        elif sender == "Robot":
-            msg_label.text = f"[b]Robot:[/b] {text}"
-            msg_label.color = (0, 1, 0, 1)
-            bubble_box.background_color = (0.1, 0.1, 0.1, 0.8) 
-            bubble_box.padding = [10, 5, self.chat_scroll.width * 0.1, 5] 
-            msg_label.halign = "left"
-        elif sender == "Sistem":
-            msg_label.text = f"[b]Sistem:[/b] {text}"
-            msg_label.color = (1, 1, 0, 1) 
-            bubble_box.background_color = (0.3, 0.3, 0.3, 0.8)
-            bubble_box.padding = [10, 5, 10, 5]
-            msg_label.halign = "center"
-        elif sender == "Hata":
-            msg_label.text = f"[b]Hata:[/b] {text}"
-            msg_label.color = (1, 1, 1, 1)
-            bubble_box.background_color = (0.8, 0.2, 0.2, 0.8) 
-            bubble_box.padding = [10, 5, 10, 5]
-            msg_label.halign = "center"
-
-        with bubble_box.canvas.before:
-            from kivy.graphics import Color, RoundedRectangle
-            Color(*bubble_box.background_color)
-
-            self.rect = RoundedRectangle(size=bubble_box.size, pos=bubble_box.pos, radius=[10])
-
-        bubble_box.bind(size=lambda x, y: setattr(self.rect, 'size', y),
-                        pos=lambda x, y: setattr(self.rect, 'pos', y))
-
-        self.chat_history_layout.add_widget(bubble_box)
-        bubble_box.add_widget(msg_label) 
-
-        Clock.schedule_once(lambda dt: self.chat_scroll.scroll_y == 0)
-
-        if not from_history:
-            anim = Animation(opacity=0, duration=0) + Animation(opacity=1, duration=0.5)
-            anim.start(bubble_box)
-    
-    def set_status(self, text, color=(0, 1, 0, 1)):
-        """Durum etiketini günceller."""
-
-        self.status_label.text = text
-        self.status_label.color = color
-
-    def update_eye_animation(self, dt):
-        """Robot konuşurken göz animasyonunu duraklatır."""
-        if konusuyor_mu:
-            if self.eye_animation_scheduled:
-                Clock.unschedule(self.eye_animation_scheduled)
-                self.eye_animation_scheduled = None
-            self.img.opacity = 1 
+    # —— Açıcılar ——
+    def kisi_ekle_ac(self, *_):
+        if 'AddPersonPopup' in globals():
+            AddPersonPopup().open()
         else:
-            if not self.eye_animation_scheduled:
-                self.eye_animation_scheduled = Clock.schedule_interval(self.kirp, 3) 
+            self.set_mesaj("AddPersonPopup tanımlı değil.", "Hata")
 
-    def kirp(self, dt):
-        """Göz kırpma animasyonunu yapar."""
-        anim = Animation(opacity=0.1, duration=0.2) + Animation(opacity=1, duration=0.2)
-        anim.start(self.img)
-
-    def buton_ekle(self, yazi, y_pos, fonk=None):
-        """UI'a bir buton ekler."""
-        buton = Button(text=yazi, size_hint=(0.9, 0.08), pos_hint={"center_x": 0.5, "y": y_pos}, 
-                       background_normal="", background_color=(1, 0.75, 0, 1), color=(0,0,0,1), font_size=16)
-        buton.bind(on_release=fonk if fonk else lambda x: buton_sesli_komut())
-        self.layout.add_widget(buton)
-
-    def kullanici_degistir(self, *args):
-        """Kullanıcı değiştirme pop-up'ını açar."""
-        ayar = ayarlari_yukle()
-        kullanici_adlari = [k["ad"] for k in ayar["kullanicilar"]]
-        if not kullanici_adlari:
-            seslendir("Henüz kayıtlı kullanıcı bulunamadı. Lütfen ayarlari.json dosyasını kontrol edin ve kullanıcı ekleyin.")
-            if self.robot_app_instance:
-                Clock.schedule_once(lambda dt: self.robot_app_instance.set_mesaj("Kayıtlı kullanıcı yok.", "Uyarı"))
+    def kullanici_degistir(self, *_):
+        if 'ayarlari_yukle' not in globals():
+            self.set_mesaj("ayarlari_yukle() bulunamadı.", "Hata")
             return
-
-        spinner = Spinner(text="Kullanıcı Seç", values=kullanici_adlari, size_hint=(None, None), size=(200, 50))
+        ayar = ayarlari_yukle()
+        names = [k.get("ad", "Adsız") for k in ayar.get("kullanicilar", [])]
+        if not names:
+            seslendir("Kayıtlı kullanıcı bulunamadı.")
+            self.set_mesaj("Kayıtlı kullanıcı yok.", "Sistem")
+            return
+        sp = Spinner(text="Kullanıcı Seç", values=names, size_hint=(None, None), size=(dp(220), dp(48)))
 
         def on_select(spinner_instance, text):
             ayar["aktif_kullanici"] = spinner_instance.values.index(text)
             try:
                 with open(AYARLAR_DOSYASI, "w", encoding="utf-8") as f:
                     json.dump(ayar, f, ensure_ascii=False, indent=2)
-                popup.dismiss()
-                seslendir(f"{text} aktif kullanıcı olarak seçildi.")
+                pop.dismiss()
+                seslendir(f"{text} aktif kullanıcı.")
             except Exception as e:
-                seslendir(f"Kullanıcı değiştirilirken hata oluştu: {e}")
-                if self.robot_app_instance:
-                    Clock.schedule_once(lambda dt: self.robot_app_instance.set_mesaj(f"Kullanıcı değiştirme hatası: {e}", "Hata"))
+                self.set_mesaj(f"Hata: {e}", "Hata")
 
-        spinner.bind(text=on_select)
-        popup = Popup(title="Kullanıcı Değiştir", content=spinner, size_hint=(None, None), size=(300, 200))
-        popup.open()
+        sp.bind(text=on_select)
+        pop = Popup(title="", content=RoundPanel(children=[sp]),
+                    size_hint=(None, None), size=(dp(320), dp(160)))
+        pop.open()
+
+    # —— Sohbet geçmişi & durum ——
+    def load_chat_history_to_ui(self):
+        if 'sohbet_gecmisini_oku' not in globals():
+            return
+        for line in sohbet_gecmisini_oku().split("\n"):
+            t = line.strip()
+            if not t or t.startswith("#") or "]: " not in t:
+                continue
+            parts = t.split("]: ", 1)
+            sender_msg = parts[1]
+            if sender_msg.startswith("Kullanıcı:"):
+                self.set_mesaj(sender_msg.split("Kullanıcı:", 1)[1].strip(), "Kullanıcı", from_history=True)
+            elif sender_msg.startswith("Robot:"):
+                self.set_mesaj(sender_msg.split("Robot:", 1)[1].strip(), "Robot", from_history=True)
+            else:
+                self.set_mesaj(sender_msg, "Sistem", from_history=True)
+
+    def set_mesaj(self, text, sender="Robot", from_history=False):
+        bubble = RoundPanel(radius=14, fill=(0.12, 0.13, 0.18, 0.9))
+        bubble.size_hint_y = None
+        bubble.height = dp(56)
+        lbl = Label(
+            text=f"[b]{sender}:[/b] {text}" if sender in ("Robot", "Sistem", "Hata") else f"[b]Siz:[/b] {text}",
+            markup=True, color=Theme.txt, halign="left", valign="middle"
+        )
+        lbl.bind(size=lambda _, v: setattr(lbl, "text_size", v))
+        bubble.add_widget(lbl)
+        self.chat_history_layout.add_widget(bubble)
+        Clock.schedule_once(lambda dt: setattr(self.chat_scroll, "scroll_y", 0))
+        if not from_history:
+            anim = Animation(opacity=0, duration=0)
+            anim += Animation(opacity=1, duration=0.35)
+            anim.start(bubble)
+
+    def set_status(self, text, color=Theme.sub):
+        self.status_label.text = text
+        self.status_label.color = color
+
+    # —— Göz kırpma ——
+    def update_eye_animation(self, dt):
+        if 'konusuyor_mu' in globals() and konusuyor_mu:
+            if self.eye_animation_scheduled:
+                Clock.unschedule(self.eye_animation_scheduled)
+                self.eye_animation_scheduled = None
+            self.img.opacity = 1
+        else:
+            if not self.eye_animation_scheduled:
+                self.eye_animation_scheduled = Clock.schedule_interval(self.kirp, 3)
+
+    def kirp(self, dt):
+        anim = Animation(opacity=0.1, duration=0.18) + Animation(opacity=1, duration=0.18)
+        anim.start(self.img)
+
 
 if __name__ == "__main__":
-    subprocess.Popen(["python", "arama_ekrani.py"])
     RobotApp().run()
