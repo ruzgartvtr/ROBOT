@@ -1,7 +1,9 @@
 {
-  "version": "1.0.1",
-  "name": "TEST",
-  "description": "Stabilite iyileştirmeleri.",
-  "image_url": "...",
-  "script_url": "..."
+  "latest": {
+    "version": "1.0.1",
+    "name": "TSTSTSTSTS",
+    "description": "Stabilite iyileştirmeleri.",
+    "image_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/refs/heads/main/Ataturk.jpeg",
+    "script_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/refs/heads/main/install_1_0_1.sh"
+  }
 }
