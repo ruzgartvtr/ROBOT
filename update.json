@@ -1,0 +1,11 @@
+{
+  "latest": {
+    "version": "1.0.1",
+    "name": "Robot Update 1.0.1",
+    "description": "Stabilite iyileştirmeleri.",
+    "image_url": "https://example.com/update.png",
+    "script_url": "https://example.com/install_1_0_1.sh",
+    "script_size_bytes": 10240,
+    "script_sha256": "abcd1234...."
+  }
+}
