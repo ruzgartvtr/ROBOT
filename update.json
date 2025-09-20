@@ -1,7 +1,7 @@
 {
   "latest": {
-    "version": "1.0.1",
-    "name": "Robot Update 1.0.2",
+    "version": "1.0.2",
+    "name": "TEST",
     "description": "Stabilite iyileştirmeleri.",
     "image_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/refs/heads/main/Ataturk.jpeg",
     "script_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/refs/heads/main/test.sh",
