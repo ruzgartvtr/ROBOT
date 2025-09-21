@@ -1,8 +1,8 @@
 {
   "latest": {
-    "version": "1.0.2",
-    "name": "TEST",
-    "description": "Stabilite iyileştirmeleri.",
+    "version": "1.0.3",
+    "name": "Ajan Modu",
+    "description": "Ajan Modu Geliştirme Aşamasında",
     "image_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/main/Ataturk.jpeg",
     "script_url": "https://raw.githubusercontent.com/ruzgartvtr/ROBOT/main/test.sh"
   }
